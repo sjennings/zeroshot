@@ -11,16 +11,28 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const assert = require('assert');
+const crypto = require('crypto');
 
-// Test storage directory (isolated)
-const TEST_STORAGE_DIR = path.join(os.tmpdir(), 'zeroshot-first-run-test-' + Date.now());
+// Test storage directory (isolated) - unique per run to avoid conflicts
+// Use crypto for extra uniqueness to prevent any test pollution
+const TEST_STORAGE_DIR = path.join(
+  os.tmpdir(),
+  'zeroshot-first-run-test-' + Date.now() + '-' + crypto.randomBytes(8).toString('hex')
+);
 const TEST_SETTINGS_FILE = path.join(TEST_STORAGE_DIR, 'settings.json');
 
-// Set env var to use test settings file
-// The settings module reads this dynamically via getSettingsFile()
+// Set env var IMMEDIATELY at module load time - before any other test can interfere
+// This is critical because c8 coverage may preload modules differently
 process.env.ZEROSHOT_SETTINGS_FILE = TEST_SETTINGS_FILE;
 
+// Force fresh module load by clearing cache for all settings-related modules
+// Clear BEFORE requiring to ensure they pick up our env var
+const settingsPath = require.resolve('../lib/settings');
+const firstRunPath = require.resolve('../cli/lib/first-run');
+delete require.cache[settingsPath];
+delete require.cache[firstRunPath];
 
+// Now require fresh modules that will read our env var
 const settingsModule = require('../lib/settings');
 const firstRunModule = require('../cli/lib/first-run');
 
@@ -28,9 +40,17 @@ describe('First-Run Setup', function () {
   this.timeout(10000);
 
   before(function () {
+    // Create test directory
     if (!fs.existsSync(TEST_STORAGE_DIR)) {
       fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
     }
+
+    // Verify env var is set correctly (sanity check)
+    assert.strictEqual(
+      settingsModule.getSettingsFile(),
+      TEST_SETTINGS_FILE,
+      'Settings file path should match test file'
+    );
   });
 
   after(function () {
