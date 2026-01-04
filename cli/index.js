@@ -169,6 +169,24 @@ function detectGitRepoRoot() {
   }
 }
 
+/**
+ * Parse CLI mount specs (host:container[:ro]) into mount config objects
+ * @param {string[]} specs - Array of mount specs from CLI
+ * @returns {Array<{host: string, container: string, readonly: boolean}>}
+ */
+function parseMountSpecs(specs) {
+  return specs.map((spec) => {
+    const parts = spec.split(':');
+    if (parts.length < 2) {
+      throw new Error(`Invalid mount spec: "${spec}". Format: host:container[:ro]`);
+    }
+    const host = parts[0];
+    const container = parts[1];
+    const readonly = parts[2] === 'ro';
+    return { host, container, readonly };
+  });
+}
+
 // Lazy-loaded orchestrator (quiet by default) - created on first use
 /** @type {import('../src/orchestrator') | null} */
 let _orchestrator = null;
@@ -362,7 +380,7 @@ function showBanner() {
 
 // Show banner on startup (but not for completion, help, or daemon child)
 const shouldShowBanner =
-  !process.env.CREW_DAEMON &&
+  !process.env.ZEROSHOT_DAEMON &&
   !process.argv.includes('--completion') &&
   !process.argv.includes('-h') &&
   !process.argv.includes('--help') &&
@@ -438,6 +456,9 @@ program
   .option('--ship', 'Full automation: worktree isolation + PR + auto-merge (use --docker for Docker)')
   .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option('-d, --detach', 'Run in background (default: attach to first agent)')
+  .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
+  .option('--no-mounts', 'Disable all Docker credential mounts')
+  .option('--container-home <path>', 'Container home directory for $HOME expansion (default: /root)')
   .addHelpText(
     'after',
     `
@@ -496,7 +517,7 @@ Input formats:
         requireGh: !!input.issue, // gh CLI required when fetching GitHub issues
         requireDocker: options.docker, // Docker required for --docker mode
         requireGit: options.worktree, // Git required for worktree isolation
-        quiet: process.env.CREW_DAEMON === '1', // Suppress success in daemon mode
+        quiet: process.env.ZEROSHOT_DAEMON === '1', // Suppress success in daemon mode
       };
       requirePreflight(preflightOptions);
 
@@ -506,7 +527,7 @@ Input formats:
 
       // === DETACHED MODE (-d flag) ===
       // Spawn daemon and exit immediately
-      if (options.detach && !process.env.CREW_DAEMON) {
+      if (options.detach && !process.env.ZEROSHOT_DAEMON) {
         const { spawn } = require('child_process');
 
         // Generate cluster ID in parent so we can display it
@@ -541,14 +562,14 @@ Input formats:
           cwd: targetCwd, // Daemon inherits correct working directory
           env: {
             ...process.env,
-            CREW_DAEMON: '1',
-            CREW_CLUSTER_ID: clusterId,
-            CREW_DOCKER: options.docker ? '1' : '',
-            CREW_DOCKER_IMAGE: options.dockerImage || '',
-            CREW_PR: options.pr ? '1' : '',
-            CREW_WORKTREE: options.worktree ? '1' : '',
-            CREW_WORKERS: options.workers?.toString() || '',
-            CREW_CWD: targetCwd, // Explicit CWD for orchestrator
+            ZEROSHOT_DAEMON: '1',
+            ZEROSHOT_CLUSTER_ID: clusterId,
+            ZEROSHOT_DOCKER: options.docker ? '1' : '',
+            ZEROSHOT_DOCKER_IMAGE: options.dockerImage || '',
+            ZEROSHOT_PR: options.pr ? '1' : '',
+            ZEROSHOT_WORKTREE: options.worktree ? '1' : '',
+            ZEROSHOT_WORKERS: options.workers?.toString() || '',
+            ZEROSHOT_CWD: targetCwd, // Explicit CWD for orchestrator
           },
         });
 
@@ -563,8 +584,8 @@ Input formats:
 
       // Use cluster ID from env (daemon mode) or generate new one (foreground mode)
       // IMPORTANT: Set env var so orchestrator picks it up
-      const clusterId = process.env.CREW_CLUSTER_ID || generateName('cluster');
-      process.env.CREW_CLUSTER_ID = clusterId;
+      const clusterId = process.env.ZEROSHOT_CLUSTER_ID || generateName('cluster');
+      process.env.ZEROSHOT_CLUSTER_ID = clusterId;
 
       // === LOAD CONFIG ===
       // Priority: CLI --config > settings.defaultConfig
@@ -596,7 +617,7 @@ Input formats:
       orchestratorInstance = orchestrator;
 
       // In foreground mode, show startup info
-      if (!process.env.CREW_DAEMON) {
+      if (!process.env.ZEROSHOT_DAEMON) {
         if (options.docker) {
           console.log(`Starting ${clusterId} (docker)`);
         } else if (options.worktree) {
@@ -610,7 +631,7 @@ Input formats:
 
       // Apply strictSchema setting to all agents (CLI > env > settings)
       const strictSchema =
-        options.strictSchema || process.env.CREW_STRICT_SCHEMA === '1' || settings.strictSchema;
+        options.strictSchema || process.env.ZEROSHOT_STRICT_SCHEMA === '1' || settings.strictSchema;
       if (strictSchema) {
         for (const agent of config.agents) {
           agent.strictSchema = true;
@@ -620,16 +641,20 @@ Input formats:
       // Build start options (CLI flags > env vars > settings)
       // In foreground mode, use CLI options directly; in daemon mode, use env vars
       // CRITICAL: cwd must be passed to orchestrator for agent CWD propagation
-      const targetCwd = process.env.CREW_CWD || detectGitRepoRoot();
+      const targetCwd = process.env.ZEROSHOT_CWD || detectGitRepoRoot();
       const startOptions = {
         cwd: targetCwd, // Target working directory for agents
         isolation:
-          options.docker || process.env.CREW_DOCKER === '1' || settings.defaultDocker,
-        isolationImage: options.dockerImage || process.env.CREW_DOCKER_IMAGE || undefined,
-        worktree: options.worktree || process.env.CREW_WORKTREE === '1',
-        autoPr: options.pr || process.env.CREW_PR === '1',
-        autoMerge: process.env.CREW_MERGE === '1',
-        autoPush: process.env.CREW_PUSH === '1',
+          options.docker || process.env.ZEROSHOT_DOCKER === '1' || settings.defaultDocker,
+        isolationImage: options.dockerImage || process.env.ZEROSHOT_DOCKER_IMAGE || undefined,
+        worktree: options.worktree || process.env.ZEROSHOT_WORKTREE === '1',
+        autoPr: options.pr || process.env.ZEROSHOT_PR === '1',
+        autoMerge: process.env.ZEROSHOT_MERGE === '1',
+        autoPush: process.env.ZEROSHOT_PUSH === '1',
+        // Docker mount options
+        noMounts: options.noMounts || false,
+        mounts: options.mount ? parseMountSpecs(options.mount) : undefined,
+        containerHome: options.containerHome || undefined,
       };
 
       // Start cluster
@@ -637,7 +662,7 @@ Input formats:
 
       // === FOREGROUND MODE: Stream logs in real-time ===
       // Subscribe to message bus directly (same process) for instant output
-      if (!process.env.CREW_DAEMON) {
+      if (!process.env.ZEROSHOT_DAEMON) {
         // Track senders that have output (for periodic flushing)
         const sendersWithOutput = new Set();
         // Track messages we've already processed (to avoid duplicates between history and subscription)
@@ -796,7 +821,7 @@ Input formats:
       // Daemon mode: cluster runs in background, stay alive via orchestrator's setInterval
       // Add cleanup handlers for daemon mode to ensure container cleanup on process exit
       // CRITICAL: Without this, containers become orphaned when daemon process dies
-      if (process.env.CREW_DAEMON) {
+      if (process.env.ZEROSHOT_DAEMON) {
         const cleanup = async (signal) => {
           console.log(`\n[DAEMON] Received ${signal}, cleaning up cluster ${clusterId}...`);
           try {

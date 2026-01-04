@@ -30,6 +30,9 @@ Message-passing primitives for multi-agent workflows. **Install:** `npm i -g @co
 | Trigger evaluation | `src/logic-engine.js` |
 | Agent wrapper | `src/agent-wrapper.js` |
 | TUI dashboard | `src/tui/` |
+| Docker mounts/env | `lib/docker-config.js` |
+| Container lifecycle | `src/isolation-manager.js` |
+| Settings | `lib/settings.js` |
 
 ## CLI Quick Reference
 
@@ -145,6 +148,37 @@ Classifies tasks on **Complexity × TaskType**, routes to parameterized template
 **Worktree:** Lightweight git branch isolation (<1s setup).
 
 **Docker:** Fresh git clone in container, credentials mounted, auto-cleanup.
+
+## Docker Mount Configuration
+
+Configurable credential mounts for `--docker` mode. See `lib/docker-config.js`.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `dockerMounts` | `Array<string\|object>` | `['gh','git','ssh']` | Presets or `{host, container, readonly}` |
+| `dockerEnvPassthrough` | `string[]` | `[]` | Extra env vars (supports `VAR`, `VAR_*`, `VAR=value`) |
+| `dockerContainerHome` | `string` | `/root` | Container home for `$HOME` expansion |
+
+**Mount presets:** `gh`, `git`, `ssh`, `aws`, `azure`, `kube`, `terraform`, `gcloud`
+
+**Env var syntax:**
+- `VAR` → pass if set in host env
+- `VAR_*` → pass all matching (e.g., `TF_VAR_*`)
+- `VAR=value` → always set to value
+- `VAR=` → always set to empty string
+
+**Config priority:** CLI flags > `ZEROSHOT_DOCKER_MOUNTS` env > settings > defaults
+
+```bash
+# Persistent config
+zeroshot settings set dockerMounts '["gh","git","ssh","aws"]'
+
+# Per-run override
+zeroshot run 123 --docker --mount ~/.custom:/root/.custom:ro
+
+# Disable all mounts
+zeroshot run 123 --docker --no-mounts
+```
 
 ## Adversarial Tester (STANDARD+ only)
 

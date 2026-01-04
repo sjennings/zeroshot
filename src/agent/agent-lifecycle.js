@@ -288,12 +288,13 @@ async function executeTask(agent, triggeringMessage) {
       // When multiple validators wake on the same trigger (e.g., IMPLEMENTATION_READY),
       // they all try to spawn Claude CLI at the same time. Claude CLI uses a lock file
       // per workspace, so only one can run. Adding jitter staggers their starts.
-      if (agent.role === 'validator') {
+      // SKIP in testMode - tests use mocks and don't need jitter
+      if (agent.role === 'validator' && !agent.testMode) {
         const jitterMs = Math.floor(Math.random() * 15000); // 0-15 seconds
         if (!agent.quiet) {
           agent._log(`[Agent ${agent.id}] Adding ${Math.round(jitterMs / 1000)}s jitter to prevent lock contention`);
         }
-        await new Promise(resolve => setTimeout(resolve, jitterMs));
+        await new Promise((resolve) => setTimeout(resolve, jitterMs));
       }
 
       agent._publishLifecycle('TASK_STARTED', {

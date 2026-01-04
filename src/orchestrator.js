@@ -541,7 +541,7 @@ class Orchestrator {
       isolation: options.isolation || false,
       isolationImage: options.isolationImage,
       worktree: options.worktree || false,
-      autoPr: process.env.CREW_PR === '1',
+      autoPr: process.env.ZEROSHOT_PR === '1',
     });
   }
 
@@ -551,7 +551,7 @@ class Orchestrator {
    */
   async _startInternal(config, input = {}, options = {}) {
     // Use pre-generated ID from parent process, or generate new one
-    const clusterId = process.env.CREW_CLUSTER_ID || generateName('cluster');
+    const clusterId = process.env.ZEROSHOT_CLUSTER_ID || generateName('cluster');
 
     // Create ledger and message bus with persistent storage
     const dbPath = config.dbPath || path.join(this.storageDir, `${clusterId}.db`);
@@ -582,6 +582,10 @@ class Orchestrator {
       containerId = await isolationManager.createContainer(clusterId, {
         workDir,
         image,
+        // Mount configuration (CLI overrides)
+        noMounts: options.noMounts,
+        mounts: options.mounts,
+        containerHome: options.containerHome,
       });
       this._log(`[Orchestrator] Container created: ${containerId} (workDir: ${workDir})`);
     } else if (options.worktree) {
@@ -682,7 +686,7 @@ class Orchestrator {
       }
 
       // Inject workers instruction if --workers explicitly provided and > 1
-      const workersCount = process.env.CREW_WORKERS ? parseInt(process.env.CREW_WORKERS) : 0;
+      const workersCount = process.env.ZEROSHOT_WORKERS ? parseInt(process.env.ZEROSHOT_WORKERS) : 0;
       if (workersCount > 1) {
         const workerAgent = config.agents.find((a) => a.id === 'worker');
         if (workerAgent) {

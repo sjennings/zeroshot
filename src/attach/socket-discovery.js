@@ -12,9 +12,9 @@ const fs = require('fs');
 const os = require('os');
 const net = require('net');
 
-const CREW_DIR = path.join(os.homedir(), '.zeroshot');
-const SOCKET_DIR = path.join(CREW_DIR, 'sockets');
-const CLUSTERS_FILE = path.join(CREW_DIR, 'clusters.json');
+const ZEROSHOT_DIR = path.join(os.homedir(), '.zeroshot');
+const SOCKET_DIR = path.join(ZEROSHOT_DIR, 'sockets');
+const CLUSTERS_FILE = path.join(ZEROSHOT_DIR, 'clusters.json');
 
 /**
  * Check if an ID is a known cluster by looking up clusters.json
@@ -251,7 +251,7 @@ function cleanupClusterSockets(clusterId) {
 }
 
 module.exports = {
-  CREW_DIR,
+  ZEROSHOT_DIR,
   SOCKET_DIR,
   ensureSocketDir,
   getTaskSocketPath,

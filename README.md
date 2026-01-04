@@ -347,6 +347,52 @@ Full isolation in a fresh container. Your workspace stays untouched. Good for ri
 | Running multiple tasks in parallel | `--docker` |
 | Full automation, no review needed | `--ship` |
 
+### Docker Credential Mounts
+
+When using `--docker`, zeroshot mounts credential directories so Claude can access tools like AWS, Azure, kubectl.
+
+**Default mounts**: `gh`, `git`, `ssh` (GitHub CLI, git config, SSH keys)
+
+**Available presets**: `gh`, `git`, `ssh`, `aws`, `azure`, `kube`, `terraform`, `gcloud`
+
+```bash
+# Configure via settings (persistent)
+zeroshot settings set dockerMounts '["gh", "git", "ssh", "aws", "azure"]'
+
+# View current config
+zeroshot settings get dockerMounts
+
+# Per-run override
+zeroshot run 123 --docker --mount ~/.aws:/root/.aws:ro
+
+# Disable all mounts
+zeroshot run 123 --docker --no-mounts
+
+# CI: env var override
+ZEROSHOT_DOCKER_MOUNTS='["aws","azure"]' zeroshot run 123 --docker
+```
+
+**Custom mounts** (mix presets with explicit paths):
+```bash
+zeroshot settings set dockerMounts '[
+  "gh",
+  "git",
+  {"host": "~/.myconfig", "container": "$HOME/.myconfig", "readonly": true}
+]'
+```
+
+**Container home**: Presets use `$HOME` placeholder. Default: `/root`. Override with:
+```bash
+zeroshot settings set dockerContainerHome '/home/node'
+# Or per-run:
+zeroshot run 123 --docker --container-home /home/node
+```
+
+**Env var passthrough**: Presets auto-pass related env vars (e.g., `aws` → `AWS_REGION`, `AWS_PROFILE`). Add custom:
+```bash
+zeroshot settings set dockerEnvPassthrough '["MY_API_KEY", "TF_VAR_*"]'
+```
+
 ---
 
 ## More

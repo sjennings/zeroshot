@@ -24,9 +24,8 @@ function log(msg) {
   appendFileSync(logFile, msg);
 }
 
-// Build environment - remove API key to force subscription credentials
+// Build environment - inherit user's auth method (API key or subscription)
 const env = { ...process.env };
-delete env.ANTHROPIC_API_KEY;
 
 // Add model flag - priority: config.model > ANTHROPIC_MODEL env var
 const claudeArgs = [...args];

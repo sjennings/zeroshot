@@ -13,6 +13,8 @@ const { Worker } = require('worker_threads');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { loadSettings } = require('../lib/settings');
+const { resolveMounts, resolveEnvs, expandEnvPatterns } = require('../lib/docker-config');
 
 /**
  * Escape a string for safe use in shell commands
@@ -64,6 +66,8 @@ class IsolationManager {
    * @param {string} config.workDir - Working directory to mount
    * @param {string} [config.image] - Docker image (default: zeroshot-cluster-base)
    * @param {boolean} [config.reuseExistingWorkspace=false] - If true, reuse existing isolated workspace (for resume)
+   * @param {Array<string|object>} [config.mounts] - Override default mounts (preset names or {host, container, readonly})
+   * @param {boolean} [config.noMounts=false] - Disable all credential mounts
    * @returns {Promise<string>} Container ID
    */
   async createContainer(clusterId, config) {
@@ -111,8 +115,12 @@ class IsolationManager {
       }
     }
 
+    // Resolve container home directory EARLY - needed for Claude config mount and hooks
+    const settings = loadSettings();
+    const containerHome = config.containerHome || settings.dockerContainerHome || '/root';
+
     // Create fresh Claude config dir for this cluster (avoids permission issues from host)
-    const clusterConfigDir = this._createClusterConfigDir(clusterId);
+    const clusterConfigDir = this._createClusterConfigDir(clusterId, containerHome);
     console.log(`[IsolationManager] Created cluster config dir at ${clusterConfigDir}`);
 
     // Build docker run command
@@ -132,37 +140,73 @@ class IsolationManager {
       // CRITICAL: Without this, agent can't run docker commands inside container
       '--group-add',
       this._getDockerGid(),
-      // Mount fresh Claude config to node user's home (read-write - Claude CLI writes settings, todos, etc.)
+      // Mount fresh Claude config to container user's home (read-write - Claude CLI writes settings, todos, etc.)
       '-v',
-      `${clusterConfigDir}:/home/node/.claude`,
+      `${clusterConfigDir}:${containerHome}/.claude`,
     ];
 
-    // Add optional volume mounts (skip if path doesn't exist or isn't mountable)
-    // Each mount is [hostPath, containerPath, options?]
-    const optionalMounts = [
-      [this._getGhConfigDir(), '/home/node/.config/gh', null], // gh credentials (read-write)
-      [this._getGitConfigPath(), '/home/node/.gitconfig', 'ro'], // git config (read-only)
-      [this._getAwsConfigDir(), '/home/node/.aws', 'ro'], // AWS credentials (read-only)
-      [this._getKubeConfigDir(), '/home/node/.kube', 'ro'], // Kubernetes config (read-only)
-      [this._getSshDir(), '/home/node/.ssh', 'ro'], // SSH keys (read-only)
-      [this._getTerraformPluginDir(), '/home/node/.terraform.d', null], // Terraform cache (read-write)
-    ];
+    // Add configurable credential mounts
+    // Priority: CLI config > env var > settings > defaults
+    if (!config.noMounts) {
+      let mountConfig;
 
-    for (const [hostPath, containerPath, options] of optionalMounts) {
-      if (hostPath && fs.existsSync(hostPath)) {
-        const mountSpec = options ? `${hostPath}:${containerPath}:${options}` : `${hostPath}:${containerPath}`;
+      if (config.mounts) {
+        // CLI override
+        mountConfig = config.mounts;
+      } else if (process.env.ZEROSHOT_DOCKER_MOUNTS) {
+        // Environment override
+        try {
+          mountConfig = JSON.parse(process.env.ZEROSHOT_DOCKER_MOUNTS);
+        } catch {
+          console.warn('[IsolationManager] Invalid ZEROSHOT_DOCKER_MOUNTS JSON, using settings');
+          mountConfig = settings.dockerMounts;
+        }
+      } else {
+        // User settings
+        mountConfig = settings.dockerMounts;
+      }
+
+      // Resolve presets to actual mount specs (containerHome already resolved above)
+      const mounts = resolveMounts(mountConfig, { containerHome });
+
+      for (const mount of mounts) {
+        const hostPath = mount.host.replace(/^~/, os.homedir());
+
+        // Check path exists and is mountable
+        try {
+          const stat = fs.statSync(hostPath);
+          // Files ending in 'config' must be files (some systems have dirs)
+          if (hostPath.endsWith('config') && !stat.isFile()) {
+            continue;
+          }
+        } catch {
+          // Path doesn't exist - skip silently
+          continue;
+        }
+
+        const mountSpec = mount.readonly
+          ? `${hostPath}:${mount.container}:ro`
+          : `${hostPath}:${mount.container}`;
         args.push('-v', mountSpec);
+      }
+
+      // Pass env vars based on enabled presets
+      const envSpecs = expandEnvPatterns(
+        resolveEnvs(mountConfig, settings.dockerEnvPassthrough)
+      );
+      for (const spec of envSpecs) {
+        if (spec.forced) {
+          // Forced value - always pass with specified value
+          args.push('-e', `${spec.name}=${spec.value}`);
+        } else if (process.env[spec.name]) {
+          // Dynamic value - only pass if set in environment
+          args.push('-e', `${spec.name}=${process.env[spec.name]}`);
+        }
       }
     }
 
-    // Environment variables and final args
+    // Finish docker args
     args.push(
-      '-e',
-      `AWS_REGION=${process.env.AWS_REGION || 'eu-north-1'}`,
-      '-e',
-      `AWS_PROFILE=${process.env.AWS_PROFILE || 'default'}`,
-      '-e',
-      'AWS_PAGER=',
       '-w',
       '/workspace',
       image,
@@ -801,9 +845,10 @@ class IsolationManager {
    * Copies only essential files: .credentials.json
    * @private
    * @param {string} clusterId - Cluster ID
+   * @param {string} containerHome - Container home directory path (e.g., '/root' or '/home/node')
    * @returns {string} Path to cluster-specific config directory
    */
-  _createClusterConfigDir(clusterId) {
+  _createClusterConfigDir(clusterId, containerHome = '/root') {
     const sourceDir = this._getClaudeConfigDir();
     const configDir = path.join(os.tmpdir(), 'zeroshot-cluster-configs', clusterId);
 
@@ -836,7 +881,7 @@ class IsolationManager {
 
     // Create settings.json with PreToolUse hook to block AskUserQuestion
     // This PREVENTS agents from asking questions in non-interactive mode
-    const settings = {
+    const clusterSettings = {
       hooks: {
         PreToolUse: [
           {
@@ -844,14 +889,14 @@ class IsolationManager {
             hooks: [
               {
                 type: 'command',
-                command: '/home/node/.claude/hooks/block-ask-user-question.py',
+                command: `${containerHome}/.claude/hooks/block-ask-user-question.py`,
               },
             ],
           },
         ],
       },
     };
-    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify(settings, null, 2));
+    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify(clusterSettings, null, 2));
 
     // Track for cleanup
     this.clusterConfigDirs = this.clusterConfigDirs || new Map();
@@ -918,68 +963,6 @@ class IsolationManager {
 
     if (!foundState) {
       console.log(`[IsolationManager] No Terraform state found to preserve`);
-    }
-  }
-
-  /**
-   * Get AWS config directory
-   * @private
-   */
-  _getAwsConfigDir() {
-    return process.env.AWS_CONFIG_DIR || path.join(os.homedir(), '.aws');
-  }
-
-  /**
-   * Get Kubernetes config directory
-   * @private
-   */
-  _getKubeConfigDir() {
-    return process.env.KUBECONFIG_DIR || path.join(os.homedir(), '.kube');
-  }
-
-  /**
-   * Get SSH directory
-   * @private
-   */
-  _getSshDir() {
-    return path.join(os.homedir(), '.ssh');
-  }
-
-  /**
-   * Get Terraform plugin cache directory
-   * @private
-   */
-  _getTerraformPluginDir() {
-    const dir = path.join(os.homedir(), '.terraform.d');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    return dir;
-  }
-
-  /**
-   * Get gh CLI config directory (for PR creation)
-   * @private
-   */
-  _getGhConfigDir() {
-    return path.join(os.homedir(), '.config', 'gh');
-  }
-
-  /**
-   * Get git config file path (for commit identity)
-   * Returns null if .gitconfig doesn't exist or is a directory (e.g., on GitHub Actions)
-   * @private
-   */
-  _getGitConfigPath() {
-    const gitConfigPath = path.join(os.homedir(), '.gitconfig');
-    try {
-      const stat = fs.statSync(gitConfigPath);
-      if (stat.isFile()) {
-        return gitConfigPath;
-      }
-      // .gitconfig exists but is a directory (GitHub Actions runner has this issue)
-      return null;
-    } catch {
-      // .gitconfig doesn't exist
-      return null;
     }
   }
 
