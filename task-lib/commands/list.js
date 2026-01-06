@@ -38,7 +38,7 @@ export function listTasks(options = {}) {
 
       const statusColor =
         {
-          running: chalk.blue,
+          running: chalk.green,
           completed: chalk.green,
           failed: chalk.red,
           stale: chalk.yellow,
@@ -75,7 +75,7 @@ export function listTasks(options = {}) {
 
       const statusColor =
         {
-          running: chalk.blue,
+          running: chalk.green,
           completed: chalk.green,
           failed: chalk.red,
           stale: chalk.yellow,

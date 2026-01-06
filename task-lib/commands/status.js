@@ -18,7 +18,7 @@ export function showStatus(taskId) {
 
   const statusColor =
     {
-      running: chalk.blue,
+      running: chalk.green,
       completed: chalk.green,
       failed: chalk.red,
     }[task.status] || chalk.yellow;

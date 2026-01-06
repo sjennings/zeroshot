@@ -283,7 +283,7 @@ class TaskTUI {
     const items = this.tasks.map((task) => {
       const statusIcon =
         {
-          running: '{blue-fg}●{/}',
+          running: '{green-fg}●{/}',
           completed: '{green-fg}●{/}',
           failed: '{red-fg}●{/}',
           stale: '{yellow-fg}●{/}',
@@ -372,7 +372,7 @@ class TaskTUI {
 
   getStatusColor(status) {
     const colors = {
-      running: '{blue-fg}running{/}',
+      running: '{green-fg}running{/}',
       completed: '{green-fg}completed{/}',
       failed: '{red-fg}failed{/}',
       stale: '{yellow-fg}stale{/}',
