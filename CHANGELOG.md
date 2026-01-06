@@ -1,3 +1,10 @@
+## [4.1.4](https://github.com/covibes/zeroshot/compare/v4.1.3...v4.1.4) (2026-01-06)
+
+
+### Bug Fixes
+
+* **ci:** enforce CI testing for all releases ([3fad703](https://github.com/covibes/zeroshot/commit/3fad703fb6eb6b7ac8f98400466bac92329c8561))
+
 ## [4.1.3](https://github.com/covibes/zeroshot/compare/v4.1.2...v4.1.3) (2026-01-06)
 
 
