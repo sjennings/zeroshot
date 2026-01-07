@@ -344,13 +344,13 @@ Full isolation in a fresh container. Your workspace stays untouched. Good for ri
 
 | Scenario | Recommended |
 | -------- | ----------- |
-| Quick trusted task | No isolation (default) |
+| Quick task, review changes yourself | No isolation (default) |
 | PR workflow, code review | `--worktree` or `--pr` |
 | Risky experiment, might break things | `--docker` |
 | Running multiple tasks in parallel | `--docker` |
 | Full automation, no review needed | `--ship` |
 
-**Safety note:** Without isolation, agents are automatically forbidden from git operations (commit, push, PR). The git-pusher agent handles commits after validators approve.
+**Default mode:** Agents are instructed to only modify files (no git commit/push). You review and commit yourself.
 
 <details>
 <summary><strong>Docker Credential Mounts</strong></summary>
