@@ -106,6 +106,7 @@ Crash recovery (`zeroshot resume`) means multi-hour tasks survive interruptions.
 ```bash
 zeroshot run 123               # Run on GitHub issue
 zeroshot run "Add dark mode"   # Run from description
+zeroshot run --bmad story.md   # Run from BMAD story/tech-spec file
 
 # Automation levels (cascading: --ship → --pr → --worktree)
 zeroshot run 123 --docker      # Docker isolation (full container)
@@ -400,6 +401,34 @@ zeroshot settings set dockerEnvPassthrough '["MY_API_KEY", "TF_VAR_*"]'
 ```
 
 </details>
+
+---
+
+## BMAD Integration
+
+Zeroshot integrates with [BMAD](https://github.com/bmadcode/BMAD-METHOD) workflow artifacts. Run directly from story or tech-spec files:
+
+```bash
+# Run a single story/tech-spec
+zeroshot run --bmad path/to/story-1.1.md
+
+# Auto-detect BMAD files (story-*.md, tech-spec-*.md)
+zeroshot run story-1.1.md
+
+# Scan directory for ready-for-dev stories
+zeroshot run --bmad path/to/stories/
+```
+
+**How it works:**
+
+1. Parses BMAD file (extracts tasks, acceptance criteria, dev notes)
+2. Bypasses conductor classification (BMAD already scoped the work)
+3. Loads optimized `bmad-workflow` template (worker + validator)
+4. Updates source file on completion (marks tasks complete, adds dev record)
+
+**Supported formats:**
+- Stories: `Status: ready-for-dev` inline
+- Tech-specs: YAML frontmatter with `status: 'ready-for-dev'`
 
 ---
 

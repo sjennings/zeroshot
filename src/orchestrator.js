@@ -22,6 +22,8 @@ const IsolationManager = require('./isolation-manager');
 const { generateName } = require('./name-generator');
 const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
+const BmadParser = require('./bmad-parser');
+const BmadOutputWriter = require('./bmad-output-writer');
 
 /**
  * Operation Chain Schema
@@ -648,9 +650,38 @@ class Orchestrator {
     this.clusters.set(clusterId, cluster);
 
     try {
-      // Fetch input (GitHub issue or text)
+      // Fetch input (GitHub issue, text, or BMAD file)
       let inputData;
-      if (input.issue) {
+      let bmadData = null; // Store parsed BMAD data for later use
+
+      if (input.bmad) {
+        // BMAD file input - parse and convert to inputData
+        const bmadPath = input.bmad;
+        const stat = fs.statSync(bmadPath);
+
+        if (stat.isDirectory()) {
+          // Directory scan - find first ready-for-dev story
+          const readyStories = await BmadParser.findReadyStories(bmadPath);
+          if (readyStories.length === 0) {
+            throw new Error(`No ready-for-dev stories found in: ${bmadPath}`);
+          }
+          // Use the first ready story
+          input.bmad = readyStories[0];
+          this._log(`[Orchestrator] Found ${readyStories.length} ready stories, using: ${path.basename(readyStories[0])}`);
+        }
+
+        // Parse the BMAD file
+        bmadData = await BmadParser.parseBmadFile(input.bmad);
+        inputData = BmadParser.toInputData(bmadData);
+
+        this._log(`[Orchestrator] BMAD ${bmadData.type}: ${bmadData.title}`);
+        this._log(`[Orchestrator] Status: ${bmadData.status}`);
+        this._log(`[Orchestrator] Tasks: ${bmadData.tasks.length}, ACs: ${bmadData.acceptanceCriteria.length}`);
+
+        // Store BMAD data in options for completion hook
+        options.bmadData = bmadData;
+        options.bmadFilePath = input.bmad;
+      } else if (input.issue) {
         inputData = await GitHub.fetchIssue(input.issue);
         // Log clickable issue link
         if (inputData.url) {
@@ -659,7 +690,7 @@ class Orchestrator {
       } else if (input.text) {
         inputData = GitHub.createTextInput(input.text);
       } else {
-        throw new Error('Either issue or text input is required');
+        throw new Error('Either issue, text, or bmad input is required');
       }
 
       // Inject git-pusher agent if --pr is set (replaces completion-detector)
@@ -794,13 +825,35 @@ class Orchestrator {
       };
 
       // Watch for CLUSTER_COMPLETE message to auto-stop
-      subscribeToClusterTopic('CLUSTER_COMPLETE', (message) => {
+      subscribeToClusterTopic('CLUSTER_COMPLETE', async (message) => {
         this._log(`\n${'='.repeat(80)}`);
         this._log(`✅ CLUSTER COMPLETED SUCCESSFULLY: ${clusterId}`);
         this._log(`${'='.repeat(80)}`);
         this._log(`Reason: ${message.content?.data?.reason || 'unknown'}`);
         this._log(`Initiated by: ${message.sender}`);
         this._log(`${'='.repeat(80)}\n`);
+
+        // BMAD Output Writing Hook - update BMAD file on completion
+        if (options.bmadData && options.bmadFilePath) {
+          try {
+            const results = BmadOutputWriter.extractClusterResults(cluster);
+            results.success = true; // CLUSTER_COMPLETE means success
+            results.model = 'sonnet'; // Default model for BMAD workflows
+
+            await BmadOutputWriter.updateBmadFile(options.bmadFilePath, results);
+            this._log(`[Orchestrator] Updated BMAD file: ${path.basename(options.bmadFilePath)}`);
+
+            // Update sprint-status.yaml if it exists
+            const sprintStatusPath = path.join(path.dirname(options.bmadFilePath), '..', 'sprint-status.yaml');
+            if (fs.existsSync(sprintStatusPath)) {
+              const storyKey = path.basename(options.bmadFilePath, '.md');
+              await BmadOutputWriter.updateSprintStatus(sprintStatusPath, storyKey, 'review');
+              this._log(`[Orchestrator] Updated sprint-status.yaml`);
+            }
+          } catch (err) {
+            this._log(`[Orchestrator] Failed to update BMAD file: ${err.message}`);
+          }
+        }
 
         // Auto-stop cluster
         this.stop(clusterId).catch((err) => {
@@ -947,23 +1000,78 @@ class Orchestrator {
 
       cluster.state = 'running';
 
-      // Publish ISSUE_OPENED message to bootstrap workflow
-      messageBus.publish({
-        cluster_id: clusterId,
-        topic: 'ISSUE_OPENED',
-        sender: 'system',
-        receiver: 'broadcast',
-        content: {
-          text: inputData.context,
-          data: {
-            issue_number: inputData.number,
-            title: inputData.title,
+      // BMAD Conductor Bypass - skip classification, load bmad-workflow directly
+      if (bmadData) {
+        // Validate that bmad-workflow template exists before attempting to load
+        const bmadTemplatePath = path.join(__dirname, '..', 'cluster-templates', 'base-templates', 'bmad-workflow.json');
+        if (!fs.existsSync(bmadTemplatePath)) {
+          throw new Error(
+            `BMAD workflow template not found at: ${bmadTemplatePath}\n` +
+            `The bmad-workflow.json template is required for --bmad mode.`
+          );
+        }
+
+        this._log(`[Orchestrator] BMAD input detected - bypassing conductor classification`);
+
+        // Publish CLUSTER_OPERATIONS to load bmad-workflow template and re-publish ISSUE_OPENED
+        messageBus.publish({
+          cluster_id: clusterId,
+          topic: 'CLUSTER_OPERATIONS',
+          sender: 'system',
+          receiver: 'broadcast',
+          content: {
+            text: `BMAD ${bmadData.type}: ${bmadData.title}`,
+            data: {
+              complexity: 'SIMPLE', // BMAD has already scoped the work
+              taskType: 'TASK',
+              operations: [
+                {
+                  action: 'load_config',
+                  config: {
+                    base: 'bmad-workflow',
+                    params: {
+                      worker_model: 'sonnet',
+                      validator_model: 'sonnet',
+                      max_iterations: 3,
+                      max_tokens: 100000,
+                      bmad_file_path: options.bmadFilePath,
+                      // Pre-format structured data as markdown (TemplateResolver only supports simple substitution)
+                      tasks_formatted: BmadParser.formatTasksForTemplate(bmadData.tasks),
+                      acceptance_criteria_formatted: BmadParser.formatAcceptanceCriteriaForTemplate(bmadData.acceptanceCriteria),
+                      file_refs_formatted: BmadParser.formatFileRefsForTemplate(bmadData.fileRefs),
+                      dev_notes: bmadData.devNotes || '(No dev notes)',
+                    },
+                  },
+                },
+                {
+                  action: 'publish',
+                  topic: 'ISSUE_OPENED',
+                  content: { text: inputData.context },
+                  metadata: { _republished: true, source: 'bmad' },
+                },
+              ],
+            },
           },
-        },
-        metadata: {
-          source: input.issue ? 'github' : 'text',
-        },
-      });
+        });
+      } else {
+        // Standard workflow - publish ISSUE_OPENED for conductor classification
+        messageBus.publish({
+          cluster_id: clusterId,
+          topic: 'ISSUE_OPENED',
+          sender: 'system',
+          receiver: 'broadcast',
+          content: {
+            text: inputData.context,
+            data: {
+              issue_number: inputData.number,
+              title: inputData.title,
+            },
+          },
+          metadata: {
+            source: input.issue ? 'github' : 'text',
+          },
+        });
+      }
 
       // CRITICAL: Mark initialization complete AFTER ISSUE_OPENED is published
       // This ensures stop() waits for at least 1 message before stopping

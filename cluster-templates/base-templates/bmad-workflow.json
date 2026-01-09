@@ -1,0 +1,167 @@
+{
+  "name": "BMAD Workflow",
+  "description": "Optimized workflow for BMAD story/tech-spec inputs. Bypasses conductor classification, uses structured ACs for validation.",
+  "params": {
+    "worker_model": {
+      "type": "string",
+      "enum": ["haiku", "sonnet", "opus"],
+      "default": "sonnet"
+    },
+    "validator_model": {
+      "type": "string",
+      "enum": ["haiku", "sonnet", "opus"],
+      "default": "sonnet"
+    },
+    "max_iterations": { "type": "number", "default": 3 },
+    "max_tokens": { "type": "number", "default": 100000 },
+    "timeout": {
+      "type": "number",
+      "default": 0,
+      "description": "Task timeout in milliseconds (0 = no timeout)"
+    },
+    "bmad_file_path": {
+      "type": "string",
+      "description": "Path to the BMAD story or tech-spec file"
+    },
+    "tasks_formatted": {
+      "type": "string",
+      "description": "Pre-formatted markdown string of tasks"
+    },
+    "acceptance_criteria_formatted": {
+      "type": "string",
+      "description": "Pre-formatted markdown string of acceptance criteria"
+    },
+    "file_refs_formatted": {
+      "type": "string",
+      "description": "Pre-formatted markdown string of file references"
+    },
+    "dev_notes": {
+      "type": "string",
+      "description": "Dev notes/context from BMAD file"
+    }
+  },
+  "agents": [
+    {
+      "id": "worker",
+      "role": "implementation",
+      "model": "{{worker_model}}",
+      "timeout": "{{timeout}}",
+      "prompt": {
+        "system": "## YOU CANNOT ASK QUESTIONS\n\nYou are running non-interactively. There is NO USER to answer.\n- NEVER use AskUserQuestion tool\n- NEVER say \"Should I...\" or \"Would you like...\"\n- When unsure: Make the SAFER choice and proceed.\n\nYou are an implementation agent for a BMAD-scoped task. The work has been pre-planned - follow the task list.\n\n## BMAD TASK CONTEXT\n\nSource file: {{bmad_file_path}}\n\n## TASK LIST\n\nComplete each task in order:\n\n{{tasks_formatted}}\n\n## DEV NOTES\n\n{{dev_notes}}\n\n## FILE REFERENCES\n\n{{file_refs_formatted}}\n\n## EXECUTION RULES\n\n1. **Follow the task list** - BMAD has already scoped the work\n2. **Use file references** - Read these files to understand context\n3. **Follow existing patterns** - Match codebase conventions\n4. **Complete all tasks** - Don't stop partway through\n5. **Run tests** - Verify your changes work\n\n## SUBSEQUENT ITERATIONS (after rejection)\n\nYou are being called back because validators REJECTED your implementation. This is NOT a minor issue.\n\n### FIX LIKE A SENIOR ENGINEER\n\n1. **STOP AND UNDERSTAND FIRST**\n   - Read ALL VALIDATION_RESULT messages completely\n   - Understand WHY each issue exists, not just WHAT it is\n   - Trace the root cause - don't patch symptoms\n\n2. **FIX PROPERLY - NO SHORTCUTS**\n   - Fix the ACTUAL problem, not the error message\n   - If your approach was wrong, redesign it - don't add band-aids\n   - Consider architectural implications of your fix\n   - A senior dev would be embarrassed to submit a half-fix\n\n3. **VERIFY YOUR FIX**\n   - Test your changes actually work\n   - Check you didn't break anything else\n   - If unsure, investigate before committing"
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "limit": 1 },
+          { "topic": "VALIDATION_RESULT", "since": "last_task_end", "limit": 3 }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        { "topic": "ISSUE_OPENED", "action": "execute_task" },
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });\nif (!lastPush) return false;\nconst response = ledger.findLast({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });\nreturn response?.content?.data?.approved === false || response?.content?.data?.approved === 'false';"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "IMPLEMENTATION_READY",
+            "content": {
+              "text": "Implementation complete. Ready for validation."
+            }
+          }
+        }
+      },
+      "maxIterations": "{{max_iterations}}"
+    },
+    {
+      "id": "validator",
+      "role": "validator",
+      "model": "{{validator_model}}",
+      "timeout": "{{timeout}}",
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "description": "true if all acceptance criteria are met"
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line validation result"
+          },
+          "ac_results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "number" },
+                "passed": { "type": "boolean" },
+                "notes": { "type": "string" }
+              }
+            },
+            "description": "Individual AC verification results"
+          },
+          "errors": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Issues found (empty if approved)"
+          }
+        },
+        "required": ["approved", "summary", "ac_results", "errors"]
+      },
+      "prompt": {
+        "system": "## YOU CANNOT ASK QUESTIONS\n\nYou are running non-interactively. There is NO USER to answer.\n- NEVER use AskUserQuestion tool\n- NEVER say \"Should I...\" or \"Would you like...\"\n- When unsure: Make the SAFER choice and proceed.\n\nYou are validating a BMAD task implementation. Use the structured acceptance criteria checklist.\n\n## VERIFICATION PROTOCOL (REQUIRED - PREVENTS FALSE CLAIMS)\n\nBefore making ANY claim about missing functionality or code issues:\n\n1. **SEARCH FIRST** - Use Glob to find ALL relevant files\n2. **READ THE CODE** - Use Read to inspect actual implementation\n3. **GREP FOR PATTERNS** - Use Grep to search for specific code (function names, endpoints, etc.)\n\n**NEVER claim something doesn't exist without FIRST searching for it.**\n\n## ACCEPTANCE CRITERIA CHECKLIST\n\nVerify EACH criterion and report status:\n\n{{acceptance_criteria_formatted}}\n\n## VALIDATION RULES\n\n**APPROVE** if:\n- ALL acceptance criteria are satisfied (verified by inspection)\n- No blocking bugs\n- Implementation matches requirements\n\n**REJECT** if:\n- ANY acceptance criterion fails (with specific reason)\n- Critical bugs prevent functionality\n- Implementation doesn't match requirements\n\n## OUTPUT FORMAT\n\nReturn JSON with:\n- `approved`: true/false\n- `summary`: one-line result\n- `ac_results`: array of {id, passed, notes} for each AC\n- `errors`: list of issues (empty if approved)"
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "limit": 1 },
+          { "topic": "IMPLEMENTATION_READY", "limit": 1 }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "ac_results": "{{result.ac_results}}",
+                "errors": "{{result.errors}}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "completion-detector",
+      "role": "orchestrator",
+      "model": "haiku",
+      "timeout": 0,
+      "triggers": [
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });\nif (!lastPush) return false;\nconst result = ledger.findLast({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });\nreturn result?.content?.data?.approved === true || result?.content?.data?.approved === 'true';"
+          },
+          "action": "stop_cluster"
+        }
+      ]
+    }
+  ]
+}

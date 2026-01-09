@@ -460,6 +460,7 @@ program
   .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
   .option('--no-mounts', 'Disable all Docker credential mounts')
   .option('--container-home <path>', 'Container home directory for $HOME expansion (default: /root)')
+  .option('--bmad <path>', 'Load BMAD story or tech-spec file (bypasses conductor classification)')
   .addHelpText(
     'after',
     `
@@ -468,6 +469,8 @@ Input formats:
   org/repo#123                     GitHub issue with explicit repo
   https://github.com/.../issues/1  Full GitHub issue URL
   "Implement feature X"            Plain text task description
+  --bmad ./path/to/story.md        BMAD story or tech-spec file
+  --bmad ./stories/                Directory to scan for ready-for-dev stories
 `
   )
   .action(async (inputArg, options) => {
@@ -494,8 +497,17 @@ Input formats:
       // Auto-detect input type
       let input = {};
 
+      // Check if --bmad flag was provided
+      if (options.bmad) {
+        const bmadPath = path.resolve(options.bmad);
+        if (!fs.existsSync(bmadPath)) {
+          console.error(chalk.red(`Error: BMAD file/directory not found: ${options.bmad}`));
+          process.exit(1);
+        }
+        input.bmad = bmadPath;
+      }
       // Check if it's a GitHub issue URL
-      if (inputArg.match(/^https?:\/\/github\.com\/[\w-]+\/[\w-]+\/issues\/\d+/)) {
+      else if (inputArg.match(/^https?:\/\/github\.com\/[\w-]+\/[\w-]+\/issues\/\d+/)) {
         input.issue = inputArg;
       }
       // Check if it's a GitHub issue number (just digits)
@@ -505,6 +517,16 @@ Input formats:
       // Check if it's org/repo#123 format
       else if (inputArg.match(/^[\w-]+\/[\w-]+#\d+$/)) {
         input.issue = inputArg;
+      }
+      // Auto-detect BMAD file by extension and name pattern
+      else if (inputArg.endsWith('.md') && fs.existsSync(inputArg)) {
+        const basename = path.basename(inputArg).toLowerCase();
+        if (basename.includes('story') || basename.includes('tech-spec') || basename.includes('techspec')) {
+          input.bmad = path.resolve(inputArg);
+        } else {
+          // Plain markdown file, treat as text
+          input.text = inputArg;
+        }
       }
       // Otherwise, treat as plain text
       else {
